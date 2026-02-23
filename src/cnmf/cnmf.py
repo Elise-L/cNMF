@@ -29,6 +29,37 @@ import anndata as ad
 
 from multiprocessing import Pool
 
+def _make_anndata_h5ad_safe(adata_obj):
+    """
+    Make AnnData safe to write to .h5ad across anndata/pandas/pyarrow combinations.
+    - fixes ArrowStringArray / nullable string problems in obs/var + indices
+    """
+    import numpy as np
+    import pandas as pd
+    import anndata as ad
+
+    # Allow writing pandas nullable strings if present (anndata default may be False)
+    ad.settings.allow_write_nullable_strings = True
+
+    # Ensure obs/var dataframes are real copies (avoid view surprises)
+    adata_obj.obs = adata_obj.obs.copy()
+    adata_obj.var = adata_obj.var.copy()
+
+    # Force indices to plain python-object strings (prevents ArrowStringArray index)
+    adata_obj.obs.index = pd.Index(np.asarray(adata_obj.obs.index.astype(str), dtype=object))
+    adata_obj.var.index = pd.Index(np.asarray(adata_obj.var.index.astype(str), dtype=object))
+
+    # Keep names in sync
+    adata_obj.obs_names = adata_obj.obs.index
+    adata_obj.var_names = adata_obj.var.index
+
+    # Force any string-like columns to object (handles string[pyarrow], StringArray, etc.)
+    for df in (adata_obj.obs, adata_obj.var):
+        for col in df.columns:
+            if pd.api.types.is_string_dtype(df[col].dtype):
+                df[col] = df[col].astype(object)
+
+    return adata_obj
 
 def save_df_to_npz(obj, filename):
     np.savez_compressed(
@@ -556,10 +587,12 @@ class cNMF:
 
         if tpm_fn is None:
             tpm = compute_tpm(input_counts)
+            tpm = _make_anndata_h5ad_safe(tpm)
             sc.write(self.paths["tpm"], tpm)
         elif tpm_fn.endswith(".mtx") or tpm_fn.endswith(".mtx.gz"):
             tpm_dir = os.path.dirname(tpm_fn)
             tpm = sc.read_10x_mtx(path=tpm_dir)
+            tpm = _make_anndata_h5ad_safe(tpm)
             sc.write(self.paths["tpm"], tpm)
         elif tpm_fn.endswith(".h5ad"):
             subprocess.call("cp %s %s" % (tpm_fn, self.paths["tpm"]), shell=True)
@@ -582,7 +615,7 @@ class cNMF:
                     obs=pd.DataFrame(index=tpm.index),
                     var=pd.DataFrame(index=tpm.columns),
                 )
-
+            tpm = _make_anndata_h5ad_safe(tpm)
             sc.write(self.paths["tpm"], tpm)
 
         if sp.issparse(tpm.X):
