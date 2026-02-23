@@ -1,41 +1,66 @@
 #!/usr/bin/env python
 
-import numpy as np
-import pandas as pd
-import os, errno, sys
 import datetime
-import uuid
+import errno
 import itertools
-import yaml
+import os
 import subprocess
-import scipy.sparse as sp
+import uuid
 import warnings
-from loguru import logger
-
-from scipy.spatial.distance import squareform
-from sklearn.decomposition import non_negative_factorization
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-from sklearn.metrics.pairwise import euclidean_distances
-from sklearn.utils import sparsefuncs
-from sklearn.preprocessing import StandardScaler
-
-from scipy.cluster.hierarchy import leaves_list, linkage
-
-import matplotlib.pyplot as plt
-
-import scanpy as sc
-import anndata as ad
-
 from multiprocessing import Pool
 
+import anndata as ad
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import scipy.sparse as sp
+import yaml
+from loguru import logger
+from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial.distance import squareform
+from sklearn.cluster import KMeans
+from sklearn.decomposition import non_negative_factorization
+from sklearn.metrics import silhouette_score
+from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.preprocessing import StandardScaler
+
+
 def _write_h5ad_safe(path, adata):
+    import pandas as pd
+
     old = ad.settings.allow_write_nullable_strings
     try:
         ad.settings.allow_write_nullable_strings = True
+        adata = adata.copy()
+
+        def _sanitize_df(df, new_index):
+            clean = {}
+            for col in df.columns:
+                s = df[col]
+                if isinstance(s.dtype, pd.CategoricalDtype):
+                    new_cats = pd.Index(
+                        list(s.cat.categories.astype(str)), dtype=object
+                    )
+                    s = pd.Categorical.from_codes(
+                        s.cat.codes, categories=new_cats, ordered=s.cat.ordered
+                    )
+                elif pd.api.types.is_string_dtype(s.dtype):
+                    s = s.astype(object)
+                clean[col] = s
+            return pd.DataFrame(clean, index=new_index)
+
+        obs_index = pd.Index(list(adata.obs.index.astype(str)), dtype=object)
+        var_index = pd.Index(list(adata.var.index.astype(str)), dtype=object)
+        adata.obs = _sanitize_df(adata.obs, obs_index)
+        adata.var = _sanitize_df(adata.var, var_index)
+        adata.obs_names = adata.obs.index
+        adata.var_names = adata.var.index
+
         sc.write(path, adata)
     finally:
         ad.settings.allow_write_nullable_strings = old
+
 
 def save_df_to_npz(obj, filename):
     np.savez_compressed(
@@ -1344,8 +1369,8 @@ class cNMF:
                     ## Corner case where a component only has one element
                     spectra_order += list(np.where(cl_filter)[0])
 
-            from matplotlib import gridspec
             import matplotlib.pyplot as plt
+            from matplotlib import gridspec
 
             width_ratios = [0.5, 9, 0.5, 4, 1]
             height_ratios = [0.5, 9]
@@ -1662,7 +1687,7 @@ def main():
 
     """
 
-    import sys, argparse
+    import argparse
 
     parser = argparse.ArgumentParser()
 
